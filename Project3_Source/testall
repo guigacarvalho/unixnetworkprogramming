@@ -1,0 +1,4 @@
+#!/bin/bash 
+cp test/testfile* .
+./svsh < test/svsh > result/svsh.txt
+./posh < test/posh > result/posh.txt
