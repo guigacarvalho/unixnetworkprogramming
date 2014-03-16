@@ -1,0 +1,7 @@
+READ aaa
+READ testfile1
+DELETE bbb
+DELETE testfile1
+DELETE testfile1
+read aaa
+EXIT

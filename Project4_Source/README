@@ -1,0 +1,496 @@
+// COEN 236 - Unix Network Programming
+// Guilherme Barreto Carvalho SCUID 00001094282
+// Project 4 - Client Server Applications with TCP and UDP sockets
+// absolute UNIX pathname: /projects/dropbox/COEN236/P4/P4_GuilhermeBarretoCarvalho
+
+// Index
+
+0. How the program works
+1. Validation
+2. Algorithm description
+3. Testing and compiling instructions
+4. Source code
+
+
+// Contents
+
+// 0. How the program works
+
+The current programs implements three basic commands: READ, DELETE and EXIT.
+
+The logic assumes that the server is started before the client. And that the path:
+/projects/dropbox/COEN236/P4/P4_GuilhermeBarretoCarvalho/
+is available.
+
+You can start the server program by typing the name of the desired protocol followed by "serv": 
+./tcpserv 
+or
+./udpserv
+
+Then you need to type the commands following the program syntax:
+
+% READ filename
+% DELETE filename
+% EXIT
+
+// 1. Validation
+
+To enable an easier testing, I provided a bash script called "testall" which does the following operations:
+#!/bin/bash 
+cp test/testfile* .
+./svsh < test/svsh > result/svsh.txt
+./posh < test/posh > result/posh.txt
+
+The files test/<ipc> provide the testcases and the test/testfile* provide the files which are manipulated by each program. 
+The test/testfile* contents is the fibonacci series up to the 20th term.
+
+The testcases are very similar and follow the following structure:
+
+READ aaa 
+# In this command, the file does not exist, the answer from the server should be: 
+# Problems opening 'aaa': No such file or directory.
+
+READ testfile1
+# In this command, the file does exist, the answer from the server should be the fibonacci series up to the 20th term.
+# 0,1,1,2,3,5,8,13,21,34,55,89,144,233,377,610,987,1597,2584,4181
+
+DELETE bbb
+# In this command, the file does not exist, the answer from the server should be: 
+# Problems deleting 'bbb': No such file or directory.
+
+DELETE testfile1
+# In this command, the file does exist, the answer from the server should be: 
+# Deleted successfully.
+
+DELETE testfile1
+# In this command, the file does not exist anymore, the answer from the server should be: 
+# Problems deleting 'testfile1': No such file or directory.
+
+read aaa
+# This is not a valid command and the answer from the server should be: 
+# Invalid command. Try READ, DELETE or EXIT.
+
+EXIT
+# This is a valid command and the server should close the ipc, do whatever cleanup or garbage collection left and exit.
+
+2. Algorithm description
+
+Initially, the server creates a text file called socketsharedfile and writes the dot decimal representation of its own IP address followed by the port number. Then, teh server process starts listening to connections from the potential clients.
+
+Then the client process is started by other user in the network. The client process reads the servers' IP address and port from the shared file. After that, the client 
+
+After that, the server reads from the shared memory segment, parses the command, saves the apropriate response into the shared memory and releases the sempahore blocking the client process. 
+
+The client process displays the message from the shared memory and waits for another command.
+
+The EXIT command works a little bit different from the READ and DELETE. After the EXIT command, the client process exits and the server process does the cleanup and exits.
+
+// 3. Testing and compiling instructions
+
+The files are located at /projects/dropbox/COEN236/P4/P4_GuilhermeBarretoCarvalho and /home/gcarvalh/Dropbox/coen236/p4 at the machine linux.dc.engr.scu.edu
+
+Just type 'make' to generate the executables and ./testall to run the testcases.
+
+This is the output of the command valgrind ./testall
+==3024== Memcheck, a memory error detector
+==3024== Copyright (C) 2002-2012, and GNU GPL'd, by Julian Seward et al.
+==3024== Using Valgrind-3.8.1 and LibVEX; rerun with -h for copyright info
+==3024== Command: ./testall
+==3024== 
+-server: linux60823 running @ 129.210.16.93:54454
+-server: linux60823 running @ 129.210.16.93:34899
+==3024== 
+==3024== HEAP SUMMARY:
+==3024==     in use at exit: 28,937 bytes in 652 blocks
+==3024==   total heap usage: 1,047 allocs, 395 frees, 83,404 bytes allocated
+==3024== 
+==3024== LEAK SUMMARY:
+==3024==    definitely lost: 0 bytes in 0 blocks
+==3024==    indirectly lost: 0 bytes in 0 blocks
+==3024==      possibly lost: 0 bytes in 0 blocks
+==3024==    still reachable: 28,937 bytes in 652 blocks
+==3024==         suppressed: 0 bytes in 0 blocks
+==3024== Rerun with --leak-check=full to see details of leaked memory
+==3024== 
+==3024== For counts of detected and suppressed errors, rerun with: -v
+==3024== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 6 from 6)
+
+
+// 4. Source code
+
+# Makefile
+-----------------------------------------------------
+all:
+	cc tcpcli.c -o tcpcli
+	cc tcpserv.c -o tcpserv
+	cc udpcli.c -o udpcli
+	cc udpserv.c -o udpserv
+
+clean:
+	rm -f tcpcli tcpserv udpserv udpcli
+
+# unp.h
+-----------------------------------------------------
+#include	<sys/types.h>	/* basic system data types */
+#include	<sys/socket.h>	/* basic socket definitions */
+#include	<sys/time.h>	/* timeval{} for select() */
+#include	<netinet/in.h>	/* sockaddr_in{} and other Internet defns */
+#include	<arpa/inet.h>	/* inet(3) functions */
+#include	<errno.h>
+#include	<fcntl.h>		/* for nonblocking */
+#include	<netdb.h>
+#include	<signal.h>
+#include	<stdio.h>
+#include	<stdlib.h>
+#include	<string.h>
+#include	<sys/stat.h>	/* for S_xxx file mode constants */
+#include	<sys/uio.h>		/* for iovec{} and readv/writev */
+#include	<unistd.h>
+#include	<sys/wait.h>
+#include	<sys/un.h>		/* for Unix domain sockets */
+#include	<strings.h>		/* for convenience */
+
+#define	LISTENQ		1024	/* 2nd argument to listen() */
+#define	MAXLINE		4096	/* max text line length */
+#define	MAXSOCKADDR  128	/* max socket address structure size */
+#define	BUFFSIZE	8192	/* buffer size for reads and writes */
+#define SOCKETSHAREDFILE "/projects/dropbox/COEN236/P4/P4_GuilhermeBarretoCarvalho/socketsharedfile"
+#define	SA	struct sockaddr
+#define	FILE_MODE	(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
+#define	DIR_MODE	(FILE_MODE | S_IXUSR | S_IXGRP | S_IXOTH)
+#ifndef	HAVE_GETHOSTBYNAME2
+#define	gethostbyname2(host,family)		gethostbyname((host))
+#endif
+
+ssize_t	 readline(int, void *, size_t);
+ssize_t	 readn(int, void *, size_t);
+ssize_t	 read_fd(int, void *, size_t, int *);
+
+# udpcli.c
+-----------------------------------------------------
+#include	"unp.h"
+
+void client (FILE *, int,const  SA* , socklen_t);
+
+int main(int argc, char **argv)
+{
+	int					sockfd;
+	struct sockaddr_in	servaddr;
+
+
+	FILE *fp;
+	fp = fopen(SOCKETSHAREDFILE, "r");
+	char    ipaddr[100];char port[100];
+	fscanf(fp, "%s %s", ipaddr, port);
+
+	bzero(&servaddr, sizeof(servaddr));
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_port = htons(atoi(port));
+	inet_pton(AF_INET, ipaddr, &servaddr.sin_addr);
+
+	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+
+	client(stdin, sockfd, (SA*) &servaddr, sizeof(servaddr));		/* do it all */
+
+	exit(0);
+}
+
+void client(FILE *fp, int sockfd, const SA *pservaddr, socklen_t servlen)
+{
+	int	n;
+	char	sendline[MAXLINE], recvline[MAXLINE + 1];
+
+	while (fgets(sendline, MAXLINE, fp) != NULL) {
+
+		// Sending command to the server process
+		sendto(sockfd, sendline, strlen(sendline), 0, pservaddr, servlen);
+
+		//Exit command
+		if(!strcmp(sendline, "EXIT\n"))
+			exit(0);
+
+		//Cleaning the Receive Buffer
+		memset(recvline,0,MAXLINE);
+
+		//Reading response from the server process
+		n = recvfrom(sockfd, recvline, MAXLINE, 0, NULL, NULL);
+		recvline[n] = 0;	/* null terminate */
+
+		//Displaying response for the end user
+		fputs(recvline, stdout);
+	}
+}
+
+# udpserv.c
+-----------------------------------------------------
+#include	"unp.h"
+
+void server(int, SA *, socklen_t);
+
+int main(int argc, char **argv)
+{
+	int					listenfd, connfd,sockfd;
+	pid_t				childpid;
+	socklen_t			clilen;
+	struct sockaddr_in	cliaddr, servaddr;
+	char * ipStr;
+
+	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+
+	bzero(&servaddr, sizeof(servaddr));
+	servaddr.sin_family      = AF_INET;
+	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	servaddr.sin_port        = htons(0); //Getting unique port number from the kernel
+
+	bind(sockfd, (SA *) &servaddr, sizeof(servaddr));
+
+	//Getting port number
+	int addrlen = sizeof(servaddr);
+	getsockname(sockfd,(struct sockaddr*)&servaddr,&addrlen);  
+	int port=ntohs(servaddr.sin_port);
+
+	//Getting hostname
+	char hostname[128];
+	gethostname(hostname, sizeof hostname);
+	
+	//Getting IP Address
+	struct hostent *h;
+	struct in_addr **addr_list;
+	h=gethostbyname(hostname);
+	addr_list = (struct in_addr **)h->h_addr_list;
+	//Displaying info to the user	
+	printf("-server: %s running @ %s:%d\n", hostname, inet_ntoa(*addr_list[0]), port);
+
+	//Writing network information into a file
+	FILE*fp;
+	fp = fopen(SOCKETSHAREDFILE, "w");
+	fprintf(fp, "%s %d", inet_ntoa(*addr_list[0]), port);
+	fclose(fp);
+
+	server(sockfd, (SA *) &cliaddr, sizeof(cliaddr));
+
+}
+
+void server(int sockfd, SA *pcliaddr, socklen_t clilen)
+{
+	int		n;
+	socklen_t	len;
+	char		mesg[MAXLINE];
+	char    file[100], cmd[100];
+	char	*ptr;
+	char	buff[MAXLINE];
+	int fd;
+
+	for ( ; ; ) {
+
+			len = clilen;
+			n = recvfrom(sockfd, mesg, MAXLINE, 0, pcliaddr, &len);
+
+			//Parsing command and cleaning memorysockfd
+			sscanf(mesg, "%s %s", cmd, file);
+
+			//Executing command READ and sending response
+			if(!strcmp(cmd, "READ")){
+				if ( (fd = open(file, O_RDONLY)) < 0) {
+					snprintf(buff, sizeof(buff), "Problems opening '%s': %s.\n", file, strerror(errno));
+					n = strlen(buff);
+					sendto(sockfd, buff, n, 0, pcliaddr, len);
+				} else {
+					while ( (n = read(fd, buff, MAXLINE)) > 0)
+						sendto(sockfd, buff, n, 0, pcliaddr, len);
+					close(fd);
+			}
+
+			//Executing command DELETE and sending response
+		    } else if (!strcmp(cmd, "DELETE")){
+			    	if (!remove(file))
+						snprintf(buff, sizeof(buff), "Deleted successfully.\n");
+					else 
+						snprintf(buff, sizeof(buff), "Problems deleting '%s': %s.\n", file, strerror(errno));
+						n = strlen(buff);
+						sendto(sockfd, buff, n, 0, pcliaddr, len);
+
+			//Executing command EXIT and server clean up
+			} else if (!strcmp(cmd, "EXIT")) {
+					remove(SOCKETSHAREDFILE);
+				    	exit(0);
+			}
+
+			// Invalid Command
+			else   {
+			    	snprintf(buff, sizeof(buff),"Invalid command. Try READ, DELETE or EXIT.\n"); 
+				n = strlen(buff);
+				sendto(sockfd, buff, n, 0, pcliaddr, len);
+			}
+			memset(buff,0,MAXLINE);
+	}
+}
+
+
+# tcpcli.c
+-----------------------------------------------------
+#include	"unp.h"
+
+void client(FILE *, int);
+
+int main(int argc, char **argv)
+{
+	int	sockfd;
+	struct sockaddr_in	servaddr;
+
+	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	FILE *fp;
+	fp = fopen(SOCKETSHAREDFILE, "r");
+	char    ipaddr[100];char port[100];
+	fscanf(fp, "%s %s", ipaddr, port);
+
+	bzero(&servaddr, sizeof(servaddr));
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_port = htons(atoi(port));
+	inet_pton(AF_INET, ipaddr, &servaddr.sin_addr);
+
+	connect(sockfd, (SA *) &servaddr, sizeof(servaddr));
+
+	client(stdin, sockfd);		/* do it all */
+
+	exit(0);
+}
+
+void client(FILE *fp, int sockfd)
+{
+	char	sendline[MAXLINE], recvline[MAXLINE];
+
+	while (fgets(sendline, MAXLINE, fp) != NULL) {
+		
+		// Sending command to the server process
+		write(sockfd, sendline, strlen(sendline));
+
+		//Exit command
+		if(!strcmp(sendline, "EXIT\n"))
+			exit(0);
+
+		//Cleaning the Receive Buffer
+		memset(recvline,0,MAXLINE);
+
+		//Reading response from the server process
+		if (read(sockfd, recvline, MAXLINE) == 0)
+			printf("str_cli: server terminated prematurely");
+
+		//Displaying response for the end user
+		fputs(recvline, stdout);
+	}
+}
+
+# tcpserv.c
+-----------------------------------------------------
+#include	"unp.h"
+
+void server(int);
+
+int main(int argc, char **argv)
+{
+	int					listenfd, connfd;
+	pid_t				childpid;
+	socklen_t			clilen;
+	struct sockaddr_in	cliaddr, servaddr;
+	char * ipStr;
+
+	//Creates the listening socket
+	listenfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	bzero(&servaddr, sizeof(servaddr));
+	servaddr.sin_family      = AF_INET;
+	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	servaddr.sin_port        = htons(0); //Getting unique port number from the kernel
+
+	bind(listenfd, (SA *) &servaddr, sizeof(servaddr));
+
+	//Getting hostname
+	char hostname[128];
+	gethostname(hostname, sizeof hostname);
+	
+	//Getting IP Address
+	struct hostent *h;
+	struct in_addr **addr_list;
+	h=gethostbyname(hostname);
+	addr_list = (struct in_addr **)h->h_addr_list;
+
+	//Getting port number
+	int addrlen = sizeof(servaddr);
+	getsockname(listenfd,(struct sockaddr*)&servaddr,&addrlen);  
+	int port=ntohs(servaddr.sin_port);
+
+	//Displaying info to the user	
+	printf("-server: %s running @ %s:%d\n", hostname, inet_ntoa(*addr_list[0]), port);
+
+	//Writing network information into a file
+	FILE*fp;
+	fp = fopen(SOCKETSHAREDFILE, "w");
+	fprintf(fp, "%s %d", inet_ntoa(*addr_list[0]), port);
+	fclose(fp);
+
+	listen(listenfd, LISTENQ);
+
+	for ( ; ; ) {
+		clilen = sizeof(cliaddr);
+		connfd = accept(listenfd, (SA *) &cliaddr, &clilen);
+		close(listenfd); /* close listening socket */
+		server(connfd);	/* process the requests */
+	}
+}
+void server(int sockfd)
+{
+	ssize_t		n;
+	char		line[MAXLINE];
+	char    file[100], cmd[100];
+	char	*ptr;
+	char	buff[MAXLINE];
+	int fd;
+
+
+	for ( ; ; ) {
+		if ( (n = read(sockfd, line, MAXLINE)) == 0)
+			return;		/* connection closed by other end */
+
+			//Parsing command and cleaning memory
+			sscanf(line, "%s %s", cmd, file);
+
+			//Executing command READ and sending response
+			if(!strcmp(cmd, "READ")){
+				if ( (fd = open(file, O_RDONLY)) < 0) {
+					snprintf(buff, sizeof(buff), "Problems opening '%s': %s.\n", file, strerror(errno));
+					n = strlen(buff);
+					write(sockfd, buff, n);
+				} else {
+					while ( (n = read(fd, buff, MAXLINE)) > 0)
+						write(sockfd, buff, n);
+					close(fd);
+			}
+
+			//Executing command DELETE and sending response
+		    } else if (!strcmp(cmd, "DELETE")){
+			    	if (!remove(file))
+						snprintf(buff, sizeof(buff), "Deleted successfully.\n");
+					else 
+						snprintf(buff, sizeof(buff), "Problems deleting '%s': %s.\n", file, strerror(errno));
+						n = strlen(buff);
+						write(sockfd, buff, n);
+
+			//Executing command EXIT and server clean up
+			} else if (!strcmp(cmd, "EXIT")) {
+					remove(SOCKETSHAREDFILE);
+					close(sockfd);
+					exit(0);
+			}
+
+			// Invalid Command
+			else   {
+	    			snprintf(buff, sizeof(buff),"Invalid command. Try READ, DELETE or EXIT.\n"); 
+				n = strlen(buff);
+				write(sockfd, buff, n);
+			}
+
+			memset(buff,0,MAXLINE);
+	}
+}
