@@ -1,0 +1,6 @@
+#!/bin/bash 
+cp test/testfile* .
+./svmq < test/svmq > result/svmq.txt
+./pomq < test/pomq > result/pomq.txt
+./pipe < test/pipe > result/pipe.txt
+./fifo < test/fifo > result/fifo.txt
