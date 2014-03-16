@@ -1,0 +1,502 @@
+// COEN 236 - Unix Network Programming
+// Guilherme Barreto Carvalho SCUID 00001094282
+// Project 3 - Client Server Applications with Shared Memory and Semaphores for System V and POSIX
+// absolute UNIX pathname: /projects/dropbox/COEN236/P3/P3_GuilhermeBarretoCarvalho
+
+// Index
+
+0. How the program works
+1. Validation
+2. Algorithm description
+3. Testing and compiling instructions
+4. Source code
+
+
+// Contents
+
+// 0. How the program works
+
+The current program implements three basic commands: READ, DELETE and EXIT.
+
+You can start the program by typing the name of the ipc: 
+./svsh (for System V Shared Memory and Semaphores) 
+or 
+./posh (for POSIX Shared Memory and Semaphores).
+
+Then you need to type the commands following the program syntax:
+
+% READ filename
+% DELETE filename
+% EXIT
+
+// 1. Validation
+
+To enable an easier testing, I provided a bash script called "testall" which does the following operations:
+#!/bin/bash 
+cp test/testfile* .
+./svsh < test/svsh > result/svsh.txt
+./posh < test/posh > result/posh.txt
+
+The files test/<ipc> provide the testcases and the test/testfile* provide the files which are manipulated by each program. 
+The test/testfile* contents is the fibonacci series up to the 20th term.
+
+The testcases are very similar and follow the following structure:
+
+READ aaa 
+# In this command, the file does not exist, the answer from the server should be: 
+# Problems opening 'aaa': No such file or directory.
+
+READ testfile1
+# In this command, the file does exist, the answer from the server should be the fibonacci series up to the 20th term.
+# 0,1,1,2,3,5,8,13,21,34,55,89,144,233,377,610,987,1597,2584,4181
+
+DELETE bbb
+# In this command, the file does not exist, the answer from the server should be: 
+# Problems deleting 'bbb': No such file or directory.
+
+DELETE testfile1
+# In this command, the file does exist, the answer from the server should be: 
+# Deleted successfully.
+
+DELETE testfile1
+# In this command, the file does not exist anymore, the answer from the server should be: 
+# Problems deleting 'testfile1': No such file or directory.
+
+read aaa
+# This is not a valid command and the answer from the server should be: 
+# Invalid command. Try READ, DELETE or EXIT.
+
+EXIT
+# This is a valid command and the server should close the ipc, do whatever cleanup or garbage collection left and exit.
+
+2. Algorithm description
+
+Initially, the program creates the semaphores and the shared memory segment and also forks itself generating a server process.
+
+Then, the client program reads the standard input, writes it into the shared memory, releases the sempahore blocking the server process and locks its own the semaphore.  
+
+After that, the server reads from the shared memory segment, parses the command, saves the apropriate response into the shared memory and releases the sempahore blocking the client process. 
+
+The client process displays the message from the shared memory and waits for another command.
+
+The EXIT command works a little bit different from the READ and DELETE. After the EXIT command, the client process exits and the server process does the cleanup and exits.
+
+// 3. Testing and compiling instructions
+
+The files are located at /projects/dropbox/COEN236/P3/P3_GuilhermeBarretoCarvalho and /home/gcarvalh/coen236/p3 at the machine linux.dc.engr.scu.edu
+
+Just type 'make' to generate the executables and ./testall to run the testcases.
+
+// 4. Source code
+
+# svsh.c
+
+-----------------------------------------------------
+#include "svsh.h"
+
+void	client(int, int), server(int, int), slock(int), srelease();
+
+int shmid; //Shared memory identifier
+
+int main(int argc, char **argv) {
+
+	//Initialazing variables
+	pid_t	childpid;
+	int semids, semidc, oflag;
+	char * prt;
+	oflag = SVSEM_MODE | IPC_CREAT;
+	size_t	n=MAXMESGDATA;
+	union semun arg;
+
+	//Making sure that the pathnames chosen exist
+	FILE *fp = fopen(CLOCK, "ab+");fclose(fp);
+	fp = fopen(SLOCK, "ab+");fclose(fp);
+	fp = fopen(SHMPATH, "ab+");fclose(fp);
+
+	// Creating semaphores
+	semidc = semget(ftok(CLOCK, 0), 1, oflag);
+	semids = semget(ftok(SLOCK, 0), 1, oflag);
+
+	//Initializing semaphores (0 for the client and 1 for the server)
+	arg.val = 1; semctl(semids, 0, SETVAL, arg);
+	arg.val = 0; semctl(semidc, 0, SETVAL, arg);
+
+	//Creating Shared Memory Segment
+	oflag = SVSHM_MODE | IPC_CREAT;
+	shmid = shmget(ftok(SHMPATH, 0), n, oflag);
+
+	//Initiating server process
+	if ( (childpid = fork()) == 0) {		
+		server(semids, semidc);
+	}
+
+	//Initiating client process
+	client(semids,semidc);
+}
+
+void
+client(int semids, int semidc)
+{
+	int i=0;
+	char	buff[MAXMESGDATA];
+	union semun arg; arg.val=0;
+	struct shmid_ds	shbuff;
+	char	*ptr;
+
+	//Attaching the shared memory to the client process
+	ptr = shmat(shmid, NULL, 0);
+
+	for (;;) {
+		//Testing the semaphore
+		if (semctl(semidc, 0, GETVAL, arg)==0) {
+
+			//Reading user input
+			if(fgets(buff, 4096, stdin) != NULL)
+
+			//Cleaning memory and sending command to server
+			snprintf(ptr, MAXMESGDATA, buff);
+
+			//Locking the client semaphore and releasing the server semaphore
+			arg.val=1; semctl(semidc, 0, SETVAL, arg);
+			arg.val=0; semctl(semids, 0, SETVAL, arg);
+
+			//Exit command
+			if(!strcmp(buff, "EXIT\n")) {
+				snprintf(ptr, MAXMESGDATA, buff);
+				exit(0);
+			}
+
+			//Waiting response from the server process
+			while (semctl(semids, 0, GETVAL, arg)==0);
+
+			//Reading response from the server process
+			shmctl(shmid, IPC_STAT, &shbuff);
+			write(STDOUT_FILENO, ptr, shbuff.shm_segsz);
+			printf("\n");
+		}
+	}
+}
+
+
+void server(int semids, int semidc)
+{
+	int len;
+	int	fd;
+	ssize_t	n;
+	char	buff[MAXMESGDATA];
+	char    file[100], cmd[100];
+	union semun arg; arg.val=0;
+	struct shmid_ds	shbuff;
+	char	*ptr;
+
+	//Attaching the shared memory to the server process
+	ptr = shmat(shmid, NULL, 0);
+
+	for (;;) {
+		//Testing the semaphore
+		if (semctl(semids, 0, GETVAL, arg)==0) {
+
+			//Reading shared memory
+			shmctl(shmid, IPC_STAT, &shbuff);
+
+			//Parsing command and cleaning memory
+			sscanf(ptr, "%s %s", cmd, file);
+			memset(ptr, 0, MAXMESGDATA);
+
+			//Executing command READ and sending response
+			if(!strcmp(cmd, "READ")){
+					if ( (fd = open(file, O_RDONLY)) < 0) {
+						snprintf(ptr, MAXMESGDATA, "Problems opening '%s': %s.\n", file, strerror(errno));
+					} else {
+						while ( (n = read(fd, buff, MAXLINE)) > 0)
+							snprintf(ptr, n, buff);
+						close(fd);
+			}
+
+			//Executing command DELETE and sending response
+			} else if (!strcmp(cmd, "DELETE")){
+				if (!remove(file))
+						snprintf(ptr, MAXMESGDATA, "Deleted successfully.\n");
+					else 
+						snprintf(ptr, MAXMESGDATA, "Problems deleting '%s': %s.\n", file, strerror(errno));
+
+			//Executing command EXIT and server clean up (remove semaphores and shared memory)
+			} else if (!strcmp(cmd, "EXIT")) {
+					semctl(semids, 0, IPC_RMID);
+			                semctl(semidc, 0, IPC_RMID);
+					shmctl(shmid, IPC_RMID, NULL);
+				    	exit(0);
+			}
+
+			// Invalid Command
+			else   {
+			    	snprintf(ptr, MAXMESGDATA,"Invalid command. Try READ, DELETE or EXIT.\n"); 
+			}
+
+			//Locking the server semaphore and releasing the client semaphore
+			arg.val=1; semctl(semids, 0, SETVAL, arg);
+			arg.val=0; semctl(semidc, 0, SETVAL, arg);
+		}
+	}
+}
+-----------------------------------------------------
+
+# svsh.h
+
+-----------------------------------------------------
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <sys/shm.h>
+#include <sys/ipc.h>	
+#include <sys/sem.h>	
+#include <sys/msg.h>	
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#define CLOCK "/var/tmp/svsemc"
+#define SLOCK "/var/tmp/svsems"
+#define SHMPATH "/var/tmp/svshm"
+
+#define MSG_R 0400 
+#define SEM_R 0400 
+#define SEM_A 0200
+#define MSG_W 0200
+#define	SVMSG_MODE	(MSG_R | MSG_W | MSG_R>>3 | MSG_R>>6)
+#define	SVSEM_MODE	(SEM_R | SEM_A | SEM_R>>3 | SEM_R>>6)
+#define	SVSHM_MODE	(SHM_R | SHM_W | SHM_R>>3 | SHM_R>>6)
+
+union semun {
+  int              val;
+  struct semid_ds *buf;
+  unsigned short  *array;
+};
+
+#define	MAXLINE		4096
+#define	MAXMESGDATA	(PIPE_BUF - 2*sizeof(long))
+#define	MESGHDRSIZE	(sizeof(struct mymesg) - MAXMESGDATA)
+
+struct mymesg {
+  long	mesg_len;	/* #bytes in mesg_data, can be 0 */
+  long	mesg_type;	/* message type, must be > 0 */
+  char	mesg_data[MAXMESGDATA];
+};
+-----------------------------------------------------
+
+# posh.c
+
+-----------------------------------------------------
+
+#include "posh.h"
+
+void	client(sem_t *, sem_t *), server(sem_t *, sem_t *);
+int	fd, val;
+char	*ptr;
+
+int main(int argc, char **argv) {
+
+	//Initialazing variables
+	pid_t	childpid;
+	int oflag;
+	sem_t * semids, * semidc;
+	oflag = O_RDWR | O_CREAT;
+
+	//Making sure that the pathnames chosen exist
+	FILE * fp = fopen(SHMPATH, "ab+");fclose(fp);
+
+	// Creating and initializing semaphores
+	semidc = sem_open(CLOCK, oflag, FILE_MODE, 1);
+	semids = sem_open(SLOCK, oflag, FILE_MODE, 0);
+
+	//Creating Shared Memory Segment
+	fd = open(SHMPATH, O_RDWR | O_CREAT | O_TRUNC, FILE_MODE);
+	ptr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	ftruncate(fd, 4096);
+
+	//Initiating server process
+	if ( (childpid = fork()) == 0) {
+		server(semids, semidc);
+	}
+
+	//Initiating client process
+	client(semids,semidc);
+}
+
+void client(sem_t * semids, sem_t * semidc)
+{
+	struct stat stat;
+	char	buff[MAXMESGDATA];
+
+	for (;;) {
+		//Waits for the semaphore
+		sem_wait(semidc);
+
+		//Reading user input
+		if(fgets(buff, 4096, stdin) != NULL)
+
+		//Sending command to server
+		snprintf(ptr, MAXMESGDATA, buff);
+
+		//Releasing the server semaphore
+		sem_post(semids);
+
+		//Exit command
+		if(!strcmp(buff, "EXIT\n")) {
+			snprintf(ptr, MAXMESGDATA, buff);
+			exit(0);
+		}
+
+		//Wait for the server response
+		sem_wait(semidc);
+
+		//Reading response from the server process
+		fstat(fd, &stat);
+		write(STDOUT_FILENO, ptr, stat.st_size);
+		printf("\n");
+
+		//Releasing the semaphore to restart the loop
+		sem_post(semidc);
+		
+	}
+}
+
+
+void server(sem_t * semids, sem_t * semidc)
+{
+	ssize_t	n;
+	char	buff[MAXMESGDATA];
+	char    file[100], cmd[100];
+
+	for (;;) {
+		//Waits for the semaphore
+		sem_wait(semids);
+
+		//Parsing command and cleaning memory
+		sscanf(ptr, "%s %s", cmd, file);
+		memset(ptr, 0, MAXMESGDATA);
+
+
+		//Executing command READ and sending response
+		if(!strcmp(cmd, "READ")){
+				if ( (fd = open(file, O_RDONLY)) < 0) {
+					snprintf(ptr, MAXMESGDATA, "Problems opening '%s': %s.\n", file, strerror(errno));
+				} else {
+					while ( (n = read(fd, buff, MAXLINE)) > 0)
+						snprintf(ptr, n, buff);
+					close(fd);
+		}
+
+		//Executing command DELETE and sending response
+		} else if (!strcmp(cmd, "DELETE")){
+			if (!remove(file))
+					snprintf(ptr, MAXMESGDATA, "Deleted successfully.\n");
+				else 
+					snprintf(ptr, MAXMESGDATA, "Problems deleting '%s': %s.\n", file, strerror(errno));
+
+		//Executing command EXIT and server clean up (remove semaphores and shared memory)
+		} else if (!strcmp(cmd, "EXIT")) {
+				sem_unlink(SLOCK);
+				sem_unlink(CLOCK);
+				shm_unlink(SHMPATH);
+			    	exit(0);
+		}
+
+		// Invalid Command
+		else   {
+		    	snprintf(ptr, MAXMESGDATA,"Invalid command. Try READ, DELETE or EXIT.\n"); 
+		}
+
+		//Releasing the client semaphore
+		sem_post(semidc);
+	}
+}
+-----------------------------------------------------
+
+# posh.h
+
+-----------------------------------------------------
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <mqueue.h>
+#include <sys/stat.h>	
+#include	<sys/mman.h>	/* Posix shared memory */
+#include	<semaphore.h>	/* Posix semaphores */
+
+#ifndef	SEM_FAILED
+#define	SEM_FAILED	((sem_t *)(-1))
+#endif
+
+#ifndef max
+	#define max( a, b ) ( ((a) > (b)) ? (a) : (b) )
+#endif
+
+#ifndef	MAP_FAILED
+#define	MAP_FAILED	((void *)(-1))
+#endif
+
+
+#ifdef	HAVE_SYS_MMAN_H
+# include	<sys/mman.h>	/* Posix shared memory */
+#endif
+
+typedef	unsigned int	uint_t; 
+#define	MAXLINE		4096
+#define MSG_R 0400 
+#define MSG_W 0200
+#define	SVMSG_MODE	(MSG_R | MSG_W | MSG_R>>3 | MSG_R>>6)
+#define	MAXMESGDATA	(PIPE_BUF - 2*sizeof(long))
+#define	MESGHDRSIZE	(sizeof(struct mymesg) - MAXMESGDATA)
+#define FILE_MODE       (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
+#define CLOCK "posemc"
+#define SLOCK "posems"
+#define SHMPATH "/var/tmp/poshm"
+
+struct mymesg {
+  long	mesg_len;	/* #bytes in mesg_data, can be 0 */
+  long	mesg_type;	/* message type, must be > 0 */
+  char	mesg_data[MAXMESGDATA];
+};
+
+ssize_t	 mesg_send(int, struct mymesg *);
+ssize_t	 mesg_recv();
+
+struct mymq_attr {
+  long	mq_flags;		/* message queue flag: O_NONBLOCK */
+  long	mq_maxmsg;		/* max number of messages allowed on queue */
+  long	mq_msgsize;		/* max size of a message (in bytes) */
+  long	mq_curmsgs;		/* number of messages currently on queue */
+};
+
+char *
+px_ipc_name(const char *name)
+{
+	char	*dir, *dst, *slash;
+
+	if ( (dst = malloc(PATH_MAX)) == NULL)
+		return(NULL);
+
+		/* 4can override default directory with environment variable */
+	if ( (dir = getenv("PX_IPC_NAME")) == NULL) {
+#ifdef	POSIX_IPC_PREFIX
+		dir = POSIX_IPC_PREFIX;		/* from "config.h" */
+#else
+		dir = "/tmp/";				/* default */
+#endif
+	}
+		/* 4dir must end in a slash */
+	slash = (dir[strlen(dir) - 1] == '/') ? "" : "/";
+	snprintf(dst, PATH_MAX, "%s%s%s", dir, slash, name);
+
+	return(dst);			/* caller can free() this pointer */
+}
+-----------------------------------------------------
