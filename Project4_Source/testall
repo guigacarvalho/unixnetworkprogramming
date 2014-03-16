@@ -1,0 +1,7 @@
+#!/bin/bash 
+cp test/testfile* .
+./tcpserv &
+./tcpcli < test/tcp > result/tcp.txt
+sleep 1
+./udpserv &
+./udpcli < test/udp > result/udp.txt
