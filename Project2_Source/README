@@ -1,0 +1,857 @@
+// COEN 236 - Unix Network Programming
+// Guilherme Barreto Carvalho SCUID 00001094282
+// Project 2 - Client Server Applications with PIPES, FIFO, System V Message Qeues, POSIX Message Qeues
+// absolute UNIX pathname: /projects/dropbox/COEN236/P1/P2_GuilhermeBarretoCarvalho
+
+// Index
+
+0. How the program works
+1. Validation
+2. Algorithm description
+3. Testing and compiling instructions
+4. Source code
+
+
+// Contents
+
+// 0. How the program works
+
+The current program implements three basic commands: READ, DELETE and EXIT.
+
+You can start the program by typing the name of the ipc: ./pipe or ./fifo or ./svmq or ./pomq
+
+Then you need to type the commands following the program syntax:
+
+% READ filename
+% DELETE filename
+% EXIT
+
+// 1. Validation
+
+To enable an easier testing, I provided a bash script called "testall" which does the following operations:
+#!/bin/bash 
+cp test/testfile* .
+./svmq < test/svmq > result/svmq.txt
+./pomq < test/pomq > result/pomq.txt
+./pipe < test/pipe > result/pipe.txt
+./fifo < test/fifo > result/fifo.txt
+
+The files test/<ipc> provide the testcases and the test/testfile* provide the files which are manipulated by each program. The test/testfile* contents is the fibonacci series up to the 20th term.
+
+The testcases are very similar and follow the following structure:
+
+READ aaa 
+# In this command, the file does not exist, the answer from the server should be: 
+# Problems opening 'aaa': No such file or directory.
+
+READ testfile1
+# In this command, the file does exist, the answer from the server should be the fibonacci series up to the 20th term.
+# 0,1,1,2,3,5,8,13,21,34,55,89,144,233,377,610,987,1597,2584,4181
+
+DELETE bbb
+# In this command, the file does not exist, the answer from the server should be: 
+# Problems deleting 'bbb': No such file or directory.
+
+DELETE testfile1
+# In this command, the file does exist, the answer from the server should be: 
+# Deleted successfully.
+
+DELETE testfile1
+# In this command, the file does not exist anymore, the answer from the server should be: 
+# Problems deleting 'testfile1': No such file or directory.
+
+read aaa
+# This is not a valid command and the answer from the server should be: 
+# Invalid command. Try READ, DELETE or EXIT.
+
+EXIT
+# This is a valid command and the server should close the ipc, do whatever cleanup or garbage collection left and exit.
+
+2. Algorithm description
+
+Initially, the program forks itself and generates a server process.
+
+Then, the client program reads the standard input and writes it into the buffer. The buffer is sent through the selected IPC to the server process. After that, the server parses the command and sends the apropriate response to the client process. The client process displays the message from the server and waits for another command.
+
+The EXIT command works a little bit different from the READ and DELETE. After sending the EXIT command to the client process exits and the server process does the cleanup and exits.
+
+// 3. Testing and compiling instructions
+
+The files are located at /projects/dropbox/COEN236/P1/P2_GuilhermeBarretoCarvalho and /home/gcarvalh/coen236/p2 at the machine linux.dc.engr.scu.edu
+
+Just type 'make' to generate the executables and ./testall to run the testcases.
+
+// 4. Source code
+
+# pipe.c
+
+-----------------------------------------------------
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+
+
+#define	MAXLINE		4096
+
+void	client(int, int), server(int, int);
+
+int main(int argc, char **argv) {
+
+	//Initialazing variables
+	int		pipe1[2], pipe2[2];
+	pid_t	childpid;
+
+	// Creating pipes
+	pipe(pipe1);
+	pipe(pipe2);
+
+	//Initiating server process
+	if ( (childpid = fork()) == 0) {		
+		close(pipe1[1]);
+		close(pipe2[0]);
+		server(pipe1[0], pipe2[1]);
+	}
+
+	//Initiating client process
+	close(pipe1[0]);
+	close(pipe2[1]);
+	client(pipe2[0], pipe1[1]);
+
+}
+
+
+void
+client(int readfd, int writefd)
+{
+	size_t	len;
+	ssize_t	n;
+	char	buff[MAXLINE];
+
+	// Reading user input
+  	while (fgets(buff, 4096, stdin) != NULL) {
+		len = strlen(buff);
+		if (buff[len - 1] == '\n')
+			len--;	
+
+		// Sending command to the server process
+		write(writefd, buff, len);
+
+		//Exit command
+		if(!strcmp(buff, "EXIT\n"))
+			exit(0);
+
+		// Reading response from the server process
+		if ( (n = read(readfd, buff, MAXLINE)) > 0) { 
+			write(STDOUT_FILENO, buff, n);
+		}
+
+	}
+}
+
+
+void
+server(int readfd, int writefd)
+{
+	int len;
+	int		fd;
+	ssize_t	n;
+	char	buff[MAXLINE+1];
+	char    file[100], cmd[100];
+
+	//Reading command from server
+	while((n = read(readfd, buff, MAXLINE))!=0) {
+		buff[n] = '\0'; //Null terminate command
+
+		//Parsing command and filename
+		sscanf(buff, "%s %s", cmd, file);
+
+		//Executing command READ and sending response
+	    if(!strcmp(cmd, "READ")){
+			if ( (fd = open(file, O_RDONLY)) < 0) {
+				snprintf(buff, sizeof(buff), "Problems opening '%s': %s.\n", file, strerror(errno));
+				n = strlen(buff);
+				write(writefd, buff, n);
+			} else {
+				while ( (n = read(fd, buff, MAXLINE)) > 0)
+					write(writefd, buff, n);
+				close(fd);
+			}
+
+		//Executing command DELETE and sending response
+	    } else if (!strcmp(cmd, "DELETE")){
+			    	if (!remove(file))
+						snprintf(buff, sizeof(buff), "Deleted successfully.\n");
+					else 
+						snprintf(buff, sizeof(buff), "Problems deleting '%s': %s.\n", file, strerror(errno));
+						n = strlen(buff);
+						write(writefd, buff, n);
+
+		//Executing command EXIT and cleaning up
+	    } else if (!strcmp(cmd, "EXIT")) {
+		    	close(readfd);
+		    	close(writefd);
+		    	exit(0);
+		}
+
+	    // Invalid Command
+	    else   {
+	    	snprintf(buff, sizeof(buff),"Invalid command. Try READ, DELETE or EXIT.\n"); 
+				n = strlen(buff);
+				write(writefd, buff, n);
+		}
+	}
+}
+-----------------------------------------------------
+
+# fifo.c
+
+-----------------------------------------------------
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+
+
+#define	MAXLINE		4096
+#define FIFO1 "/var/tmp/fifo.1"
+#define FIFO2 "/var/tmp/fifo.2"
+#define	FILE_MODE	(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
+
+
+void	client(int, int), server(int, int);
+
+int main(int argc, char **argv) {
+
+	//Variables
+	int readfd, writefd;
+	pid_t	childpid;
+
+	// Creating fifos
+	if ((mkfifo(FIFO1, FILE_MODE) < 0) && (errno != EEXIST))
+		printf("can't create fifo.1");
+	if ((mkfifo(FIFO2, FILE_MODE) < 0) && (errno != EEXIST)) {
+		unlink(FIFO1);
+		printf("can't create fifo.2");
+	}
+
+
+	//Initiating server process
+	if ( (childpid = fork()) == 0) {		
+		readfd = open(FIFO1, O_RDONLY, 0);
+		writefd = open(FIFO2, O_WRONLY, 0);
+		server(readfd, writefd);
+	}
+
+	//Initiating client process
+	writefd = open(FIFO1, O_WRONLY, 0);
+	readfd = open(FIFO2, O_RDONLY, 0);
+	client(readfd, writefd);
+}
+
+
+void
+client(int readfd, int writefd)
+{
+	size_t	len;
+	ssize_t	n;
+	char	buff[MAXLINE];
+
+	// Reading user input
+  	while (fgets(buff, 4096, stdin) != NULL) {
+		len = strlen(buff);
+		if (buff[len - 1] == '\n')
+			len--;	
+
+		// Sending command to the server process
+		write(writefd, buff, len);
+
+		//Exit command
+		if(!strcmp(buff, "EXIT\n"))
+			exit(0);
+
+		// Reading response from the server process
+		if ( (n = read(readfd, buff, MAXLINE)) > 0) { 
+			write(STDOUT_FILENO, buff, n);
+		}
+
+	}
+}
+
+
+void
+server(int readfd, int writefd)
+{
+	int len;
+	int		fd;
+	ssize_t	n;
+	char	buff[MAXLINE+1];
+	char    file[100], cmd[100];
+
+	//Reading command from server
+	while((n = read(readfd, buff, MAXLINE))!=0) {
+		buff[n] = '\0'; //Null terminate command
+
+		//Parsing command and filename
+		sscanf(buff, "%s %s", cmd, file);
+
+		//Executing command READ and sending response
+	    if(!strcmp(cmd, "READ")){
+			if ( (fd = open(file, O_RDONLY)) < 0) {
+				snprintf(buff, sizeof(buff), "Problems opening '%s': %s.\n", file, strerror(errno));
+				n = strlen(buff);
+				write(writefd, buff, n);
+			} else {
+				while ( (n = read(fd, buff, MAXLINE)) > 0)
+					write(writefd, buff, n);
+				close(fd);
+			}
+
+		//Executing command DELETE and sending response
+	    } else if (!strcmp(cmd, "DELETE")){
+			    	if (!remove(file))
+						snprintf(buff, sizeof(buff), "Deleted successfully.\n");
+					else 
+						snprintf(buff, sizeof(buff), "Problems deleting '%s': %s.\n", file, strerror(errno));
+						n = strlen(buff);
+						write(writefd, buff, n);
+
+		//Executing command EXIT and cleaning up
+	    } else if (!strcmp(cmd, "EXIT")) {
+			close(readfd);
+			close(writefd);
+		    	unlink("/var/tmp/fifo.1");
+		    	unlink("/var/tmp/fifo.2");
+		    	exit(0);
+		}
+
+	    // Invalid Command
+	    else   {
+	    	snprintf(buff, sizeof(buff),"Invalid command. Try READ, DELETE or EXIT.\n"); 
+				n = strlen(buff);
+				write(writefd, buff, n);
+		}
+	}
+}
+-----------------------------------------------------
+
+# pomq.h
+
+-----------------------------------------------------
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <mqueue.h>
+
+typedef	unsigned int	uint_t; 
+
+#define MSG_R 0400 
+#define MSG_W 0200
+#define	SVMSG_MODE	(MSG_R | MSG_W | MSG_R>>3 | MSG_R>>6)
+#define	MAXMESGDATA	(PIPE_BUF - 2*sizeof(long))
+#define	MESGHDRSIZE	(sizeof(struct mymesg) - MAXMESGDATA)
+#define FILE_MODE       (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
+
+struct mymesg {
+  long	mesg_len;	/* #bytes in mesg_data, can be 0 */
+  long	mesg_type;	/* message type, must be > 0 */
+  char	mesg_data[MAXMESGDATA];
+};
+
+ssize_t	 mesg_send(int, struct mymesg *);
+ssize_t	 mesg_recv();
+
+struct mymq_attr {
+  long	mq_flags;		/* message queue flag: O_NONBLOCK */
+  long	mq_maxmsg;		/* max number of messages allowed on queue */
+  long	mq_msgsize;		/* max size of a message (in bytes) */
+  long	mq_curmsgs;		/* number of messages currently on queue */
+};
+-----------------------------------------------------
+
+# pomq.c
+
+-----------------------------------------------------
+#include	"pomq.h"
+
+void	client(int, int), server(int, int);
+struct mq_attr	attr;	
+
+int
+main(int argc, char **argv)
+{
+	//Variables and Message Queues initialization
+	int	c, flags;
+	mqd_t	readmqd, writemqd;
+	int	childpid;
+	flags = O_RDWR | O_CREAT;
+	readmqd = mq_open("/mq2", flags, FILE_MODE,
+				  (attr.mq_maxmsg != 0) ? &attr : NULL);
+	writemqd = mq_open("/mq1", flags, FILE_MODE,
+				  (attr.mq_maxmsg != 0) ? &attr : NULL);
+
+	//Initiating server process
+	if ( (childpid = fork()) == 0) {
+		server(readmqd, writemqd);
+	}
+
+	//Initiating client process
+	client(writemqd, readmqd);
+
+	exit(0);
+}
+
+//Receiving message function
+ssize_t
+mesg_recv(mqd_t mqd, struct mymesg *mptr)
+{
+
+	int	 i;
+	ssize_t	n;
+	uint_t	prio=1;
+	struct mq_attr	attr;
+
+	mq_getattr(mqd, &attr);
+
+	i = mq_receive(mqd, mptr->mesg_data, attr.mq_msgsize, &prio);
+	return(i);
+}
+
+//Sending message function
+ssize_t
+mesg_send(mqd_t mqd, struct mymesg *mptr)
+{
+	return(mq_send(mqd, mptr->mesg_data, mptr->mesg_len, 1));
+
+}
+
+void
+client(mqd_t readfd, mqd_t writefd)
+{
+	size_t	len;
+	ssize_t	n;
+	struct mymesg	mesg;
+
+	// Reading user input
+	while (fgets(mesg.mesg_data, MAXMESGDATA, stdin) != NULL) {
+		len = strlen(mesg.mesg_data);
+		if (mesg.mesg_data[len-1] == '\n')
+			len--;
+
+		// Sending command to the server process
+		mesg.mesg_len = len;
+		mesg.mesg_type = 1;
+		mesg_send(writefd, &mesg);
+
+		//Exit command
+		if(!strcmp(mesg.mesg_data, "EXIT\n"))
+			exit(0);
+	
+		// Reading response from the server process	
+		while ( (n = mesg_recv(readfd, &mesg)) > 0)
+			write(STDOUT_FILENO, mesg.mesg_data, n);
+
+	}
+}
+
+
+void
+server(mqd_t readfd, mqd_t writefd)
+{
+	FILE	*fp;
+	ssize_t	n;
+	struct mymesg	mesg;
+	char    file[100], cmd[100];
+
+
+	for ( ; ; ) {#include	"pomq.h"
+
+void	client(int, int), server(int, int);
+struct mq_attr	attr;	
+
+int
+main(int argc, char **argv)
+{
+	//Variables and Message Queues initialization
+	int	c, flags;
+	mqd_t	readmqd, writemqd;
+	int	childpid;
+	flags = O_RDWR | O_CREAT;
+	readmqd = mq_open("/mq2", flags, FILE_MODE,
+				  (attr.mq_maxmsg != 0) ? &attr : NULL);
+	writemqd = mq_open("/mq1", flags, FILE_MODE,
+				  (attr.mq_maxmsg != 0) ? &attr : NULL);
+
+	//Initiating server process
+	if ( (childpid = fork()) == 0) {
+		server(readmqd, writemqd);
+	}
+
+	//Initiating client process
+	client(writemqd, readmqd);
+
+	exit(0);
+}
+
+//Receiving message function
+ssize_t
+mesg_recv(mqd_t mqd, struct mymesg *mptr)
+{
+
+	int	 i;
+	ssize_t	n;
+	uint_t	prio=1;
+	struct mq_attr	attr;
+
+	mq_getattr(mqd, &attr);
+
+	i = mq_receive(mqd, mptr->mesg_data, attr.mq_msgsize, &prio);
+	return(i);
+}
+
+//Sending message function
+ssize_t
+mesg_send(mqd_t mqd, struct mymesg *mptr)
+{
+	return(mq_send(mqd, mptr->mesg_data, mptr->mesg_len, 1));
+
+}
+
+void
+client(mqd_t readfd, mqd_t writefd)
+{
+	size_t	len;
+	ssize_t	n;
+	struct mymesg	mesg;
+
+	// Reading user input
+	while (fgets(mesg.mesg_data, MAXMESGDATA, stdin) != NULL) {
+		len = strlen(mesg.mesg_data);
+		if (mesg.mesg_data[len-1] == '\n')
+			len--;
+
+		// Sending command to the server process
+		mesg.mesg_len = len;
+		mesg.mesg_type = 1;
+		mesg_send(writefd, &mesg);
+
+		//Exit command
+		if(!strcmp(mesg.mesg_data, "EXIT\n"))
+			exit(0);
+	
+		// Reading response from the server process	
+		while ( (n = mesg_recv(readfd, &mesg)) > 0)
+			write(STDOUT_FILENO, mesg.mesg_data, n);
+
+	}
+}
+
+
+void
+server(mqd_t readfd, mqd_t writefd)
+{
+	FILE	*fp;
+	ssize_t	n;
+	struct mymesg	mesg;
+	char    file[100], cmd[100];
+
+
+	for ( ; ; ) {
+		//Reading command from server
+		mesg.mesg_type = 1;
+		if ( (n = mesg_recv(readfd, &mesg)) == 0) 
+			printf("pathname missing");
+		mesg.mesg_data[n]='\0'; //Null terminate command
+
+		//Parsing command and filename
+		sscanf(mesg.mesg_data, "%s %s", cmd, file);
+
+		//Executing command READ and sending response
+		if(!strcmp(cmd, "READ")){
+			if ( (fp = fopen(file, "r")) == NULL) {
+				snprintf(mesg.mesg_data + n, sizeof(mesg.mesg_data) - n,
+						 ": can't open, %s\n", strerror(errno));
+				mesg.mesg_len = strlen(mesg.mesg_data);
+				mesg_send(writefd, &mesg);
+		
+			} else {
+				while (fgets(mesg.mesg_data, MAXMESGDATA, fp) != NULL) {
+					mesg.mesg_len = strlen(mesg.mesg_data);
+					mesg_send(writefd, &mesg);
+				}
+				fclose(fp);
+			}
+
+		//Executing command DELETE and sending response
+		} else if (!strcmp(cmd, "DELETE")){
+			if (!remove(file))
+				snprintf(mesg.mesg_data, sizeof(mesg.mesg_data), "Deleted successfully.\n");
+			else 
+				snprintf(mesg.mesg_data, sizeof(mesg.mesg_data), "Problems deleting '%s': %s.\n", file, strerror(errno));
+				mesg.mesg_len = strlen(mesg.mesg_data);				
+				mesg_send(writefd, &mesg);
+
+		//Executing command EXIT and cleaning up
+	    	} else if (!strcmp(cmd, "EXIT")) {
+			mq_close(readfd);
+			mq_close(writefd);
+			mq_unlink("/mq1");
+			mq_unlink("/mq2");
+			exit(0);
+
+   		}	
+		
+		// Invalid Command
+		else   {
+	    		snprintf(mesg.mesg_data, sizeof(mesg.mesg_data),"Invalid command. Try READ, DELETE or EXIT.\n"); 
+			mesg.mesg_len = strlen(mesg.mesg_data);
+ 			mesg_send(writefd, &mesg);
+		}
+
+		mesg.mesg_len = 0;
+		mesg_send(writefd, &mesg);
+	}
+}
+		//Reading command from server
+		mesg.mesg_type = 1;
+		if ( (n = mesg_recv(readfd, &mesg)) == 0) 
+			printf("pathname missing");
+		mesg.mesg_data[n]='\0'; //Null terminate command
+
+		//Parsing command and filename
+		sscanf(mesg.mesg_data, "%s %s", cmd, file);
+
+		//Executing command READ and sending response
+		if(!strcmp(cmd, "READ")){
+			if ( (fp = fopen(file, "r")) == NULL) {
+				snprintf(mesg.mesg_data + n, sizeof(mesg.mesg_data) - n,
+						 ": can't open, %s\n", strerror(errno));
+				mesg.mesg_len = strlen(mesg.mesg_data);
+				mesg_send(writefd, &mesg);
+		
+			} else {
+				while (fgets(mesg.mesg_data, MAXMESGDATA, fp) != NULL) {
+					mesg.mesg_len = strlen(mesg.mesg_data);
+					mesg_send(writefd, &mesg);
+				}
+				fclose(fp);
+			}
+
+		//Executing command DELETE and sending response
+		} else if (!strcmp(cmd, "DELETE")){
+			if (!remove(file))
+				snprintf(mesg.mesg_data, sizeof(mesg.mesg_data), "Deleted successfully.\n");
+			else 
+				snprintf(mesg.mesg_data, sizeof(mesg.mesg_data), "Problems deleting '%s': %s.\n", file, strerror(errno));
+				mesg.mesg_len = strlen(mesg.mesg_data);				
+				mesg_send(writefd, &mesg);
+
+		//Executing command EXIT and cleaning up
+	    	} else if (!strcmp(cmd, "EXIT")) {
+			mq_close(readfd);
+			mq_close(writefd);
+			mq_unlink("/mq1");
+			mq_unlink("/mq2");
+			exit(0);
+
+   		}	
+		
+		// Invalid Command
+		else   {
+	    		snprintf(mesg.mesg_data, sizeof(mesg.mesg_data),"Invalid command. Try READ, DELETE or EXIT.\n"); 
+			mesg.mesg_len = strlen(mesg.mesg_data);
+ 			mesg_send(writefd, &mesg);
+		}
+
+		mesg.mesg_len = 0;
+		mesg_send(writefd, &mesg);
+	}
+}
+-----------------------------------------------------
+
+# svmq.h
+
+-----------------------------------------------------
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <sys/msg.h>
+
+
+#define MSG_R 0400 
+#define MSG_W 0200
+#define	SVMSG_MODE	(MSG_R | MSG_W | MSG_R>>3 | MSG_R>>6)
+#define	MAXMESGDATA	(PIPE_BUF - 2*sizeof(long))
+#define	MESGHDRSIZE	(sizeof(struct mymesg) - MAXMESGDATA)
+
+struct mymesg {
+  long	mesg_len;	/* #bytes in mesg_data, can be 0 */
+  long	mesg_type;	/* message type, must be > 0 */
+  char	mesg_data[MAXMESGDATA];
+};
+
+ssize_t	 mesg_send(int, struct mymesg *);
+void	 Mesg_send(int, struct mymesg *);
+ssize_t	 mesg_recv(int, struct mymesg *);
+ssize_t	 Mesg_recv(int, struct mymesg *);
+
+#define	MQ_KEY1	1234L
+#define	MQ_KEY2	2345L
+-----------------------------------------------------
+
+# svmq.c
+
+-----------------------------------------------------
+#include	"svmq.h"
+
+void	client(int, int), server(int, int);
+
+int
+main(int argc, char **argv)
+{
+	//Variables and Message Queues initialization
+	int	readid,writeid, childpid;
+	readid = msgget(MQ_KEY1, SVMSG_MODE | IPC_CREAT);
+	writeid = msgget(MQ_KEY2, SVMSG_MODE | IPC_CREAT);
+
+	//Initiating server process
+	if ( (childpid = fork()) == 0) {
+		server(readid, writeid);
+	}
+
+	//Initiating client process
+	client(writeid, readid);
+
+	exit(0);
+}
+
+//Receiving message function
+ssize_t
+mesg_recv(int id, struct mymesg *mptr)
+{
+	ssize_t	n;
+
+	n = msgrcv(id, &(mptr->mesg_type), MAXMESGDATA, mptr->mesg_type, 0);
+	mptr->mesg_len = n;
+
+	return(n);
+}
+
+//Sending message function
+ssize_t
+mesg_send(int id, struct mymesg *mptr)
+{
+	return(msgsnd(id, &(mptr->mesg_type), mptr->mesg_len, 0));
+}
+
+void
+client(int readfd, int writefd)
+{
+	size_t	len;
+	ssize_t	n;
+	struct mymesg	mesg;
+
+
+	// Reading user input
+	while (fgets(mesg.mesg_data, MAXMESGDATA, stdin) != NULL) {
+		len = strlen(mesg.mesg_data);
+		if (mesg.mesg_data[len-1] == '\n')
+			len--;
+		
+		// Sending command to the server process
+		mesg.mesg_len = len;
+		mesg.mesg_type = 1;
+		mesg_send(writefd, &mesg);
+
+		//Exit command
+		if(!strcmp(mesg.mesg_data, "EXIT\n"))
+			exit(0);
+	
+		// Reading response from the server process	
+		while ( (n = mesg_recv(readfd, &mesg)) > 0)
+			write(STDOUT_FILENO, mesg.mesg_data, n);
+	}
+}
+
+
+void
+server(int readfd, int writefd)
+{
+	FILE	*fp;
+	ssize_t	n;
+	struct mymesg	mesg;
+	char    file[100], cmd[100], msg[100];;
+
+	for ( ; ; ) {
+		//Reading command from server
+		mesg.mesg_type = 1;
+		if ( (n = mesg_recv(readfd, &mesg)) == 0) 
+			printf("pathname missing");
+
+		mesg.mesg_data[n]='\0';//Null terminate command
+
+		//Parsing command and filename
+		sscanf(mesg.mesg_data, "%s %s", cmd, file);
+
+		//Executing command READ and sending response
+		if(!strcmp(cmd, "READ")){
+			if ( (fp = fopen(file, "r")) == NULL) {
+				/* 4error: must tell client */
+				snprintf(mesg.mesg_data + n, sizeof(mesg.mesg_data) - n,
+						 ": can't open, %s\n", strerror(errno));
+				mesg.mesg_len = strlen(mesg.mesg_data);
+				mesg_send(writefd, &mesg);
+		
+			} else {
+				/* 4fopen succeeded: copy file to IPC channel */
+				while (fgets(mesg.mesg_data, MAXMESGDATA, fp) != NULL) {
+					mesg.mesg_len = strlen(mesg.mesg_data);
+					mesg_send(writefd, &mesg);
+				}
+				fclose(fp);
+			}
+
+		//Executing command DELETE and sending response
+		} else if (!strcmp(cmd, "DELETE")){
+			if (!remove(file)) 
+				snprintf(mesg.mesg_data, sizeof(mesg.mesg_data), "Deleted successfully.\n");
+			else 
+				snprintf(mesg.mesg_data, sizeof(mesg.mesg_data), "Problems deleting '%s': %s.\n", file, strerror(errno));
+				mesg.mesg_len = strlen(mesg.mesg_data);
+				mesg_send(writefd, &mesg);
+
+		//Executing command EXIT and cleaning up
+	    	} else if (!strcmp(cmd, "EXIT")) {
+			msgctl(readfd, IPC_RMID, NULL);
+			msgctl(writefd, IPC_RMID, NULL);
+			exit(0);
+   		}	
+		
+		// Invalid Command
+		else   {
+	    		snprintf(mesg.mesg_data, sizeof(mesg.mesg_data),"Invalid command. Try READ, DELETE or EXIT.\n");
+			mesg.mesg_len = strlen(mesg.mesg_data); 
+			mesg_send(writefd, &mesg);
+		}
+
+
+		mesg.mesg_len = 0;
+		mesg_send(writefd, &mesg);
+	}
+}
+-----------------------------------------------------
