@@ -1,0 +1,320 @@
+# COEN 246 - Unix Network Programming
+# Guilherme Barreto Carvalho SCUID 00001094282
+# Project 1 - Simple Client Server using signals for syncronization
+
+# Index
+
+0. How the program works
+1. Algorithm description
+2. Testing and compiling instructions
+3. Source code
+4. Validation
+
+# Contents
+
+0. How the program works
+
+The current program implements three basic commands: READ, DELETE and EXIT.
+
+You can start the program by typing: ./simpleipc
+
+Then you need to type the commands following the program syntax:
+
+% READ filename
+% DELETE filename
+% EXIT
+
+1. Algorithm description
+
+Initially, the program forks itself and generates a server process.
+
+Then, the client program displays a prompt. Each command typed is  written on a file called 'exchange.txt' and parsed. After that, the client program sends a signal (SIGUSR1) to server process (sendCommand() function).
+
+The server process "catches" the signal, executes the commands on the 'exchange.txt' file and writes the response to the same file. After that it sends a signal (SIGUSR1) to the client process (respondCommand() function), alerting it that the response for that command is available.
+
+The client process "catches" the signal, prints the response to the standard output (printOutput() function) and prints a new prompt (after the READ and DELETE commands) or exits after the EXIT confirmation from the server.
+
+2. Testing and compiling instructions
+
+The files are located at /projects/dropbox/COEN236/P1/P1_GuilhermeBarretoCarvalho and /home/gcarvalh/coen236/p1 at the machine linux.dc.engr.scu.edu
+
+Just type 'make' to generate the 'simpleipc' executable.
+
+3. Source code
+
+# simpleipc.c
+
+-----------------------------------------------------
+#include <stdio.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+
+volatile sig_atomic_t myFlag = 0; 
+struct sigaction newAction, oldAction; 
+sigset_t zeromask;
+
+static void myHandler(int); // Signal Handler
+void printOutput (FILE * ); 
+void sendCommand (int );
+void respondCommand();
+
+int main (int argc, char *argv[]) {
+
+	// File handling variables
+	int ch; // Variable used in File Reading
+	FILE *fp1, *fp2; // File Pointer
+	char    buf[4096]; // Variable used to read command line
+	char    file[100], cmd[100]; // Variables for the filename and command
+
+	// Process Handling variables
+	int childpid, parentpid;
+
+	// Setting up signals
+	sigemptyset(&newAction.sa_mask); 
+	newAction.sa_flags = 0;
+	newAction.sa_handler = myHandler;
+
+	sigemptyset (&oldAction.sa_mask); 
+	sigemptyset(&zeromask);
+	sigaddset (&newAction.sa_mask, SIGUSR1);
+
+	sigaction(SIGUSR1, &newAction, &oldAction);
+
+	// Creating Shared operations file
+	fp1 = fopen("exchange.txt", "w");
+	  if (fp1 == NULL) {
+	    printf("Sorry can't open exchange.txt\n");
+	    return 1;
+	  }
+	fclose(fp1);
+
+	// Creating Server Process
+	if ((childpid = fork()) == -1) {
+		perror("Can't fork");
+		exit(1);
+	} else if (childpid != 0) {
+		// Client execution code 
+
+		// Reading command line
+		printf("%% ");  // Printing prompt
+	  	while (fgets(buf, 4096, stdin) != NULL) {
+
+			// Writing Commands to file
+			fp1 = fopen("exchange.txt", "w");
+			  if (fp1 == NULL) {
+			    printf("Sorry can't open exchange.txt\n");
+			  } else {
+			  	fprintf(fp1, "%s", buf);
+			  }
+			fclose(fp1);
+
+	  		// Parsing the Commands
+	  		sscanf(buf, "%s %s", cmd, file);
+
+		    // Commands READ and DELETE
+		    if(!strcmp(cmd, "READ") || !strcmp(cmd, "DELETE") || !strcmp(cmd, "EXIT")) {
+			    sendCommand (childpid);
+				printOutput(fp1);
+				if(!strcmp(cmd, "EXIT")) {
+					remove("exchange.txt");
+			    	exit(0);
+				}
+			}
+
+		    // Invalid Command
+		    else   printf("Invalid command. Try READ, DELETE or EXIT.\n"); 
+
+			// Printing new prompt
+			printf("\n%% ");
+		}
+		exit(0);
+	} else {
+		// Server execution code
+		while(1) {
+			// Wait for signal
+			while(myFlag == 0)
+				sigsuspend (&zeromask);
+			myFlag=0;
+
+			// Handle the signal: Read and execute the command from the exchange file
+		  	fp1 = fopen("exchange.txt", "r");
+			if (fp1 == NULL) {
+				//Treating problems with the exchange file opening
+				printf("Sorry can't open exchange.txt\n");
+				exit(1);
+			}
+			else {
+		  		// Parsing the Commands
+		  		fscanf(fp1, "%s %s", cmd, file);
+		  		fp1 = fopen("exchange.txt", "w");
+			
+			    // Command READ
+			    if(!strcmp(cmd, "READ")) {
+			    	fp2 = fopen(file, "r");
+					if (fp2 == NULL) {
+						//Treating problems with the exchange file opening
+						fprintf(fp1, "Problems reading '%s'\n", file);
+					}
+					else {
+						//Echoing the file read
+						while( ( ch = fgetc(fp2) ) != EOF )
+					      		fprintf(fp1, "%c",ch);
+					}
+					fclose(fp1); 
+					if(fp2 != NULL) fclose(fp2); 
+					respondCommand();
+				}
+			    // Command DELETE
+			    else if(!strcmp(cmd, "DELETE")) {
+			    	if (!remove(file))
+						fprintf(fp1, "File '%s' deleted\n", file);
+					else 
+						fprintf(fp1, "Problems deleting '%s'\n", file);
+					fclose(fp1); 
+					respondCommand();		    	
+			    }
+
+			    // Command EXIT
+			    else if(!strcmp(cmd, "EXIT")) {
+					fprintf(fp1, "Server Terminated\n");
+					fclose(fp1); 
+					respondCommand();
+				   	exit(0);
+			    }
+			}
+
+	   }
+	}
+}
+
+static void myHandler(int sigNo) { 
+	sigprocmask (SIG_BLOCK, &newAction.sa_mask, &oldAction.sa_mask);
+	myFlag = 1;
+	return;
+}
+
+
+void printOutput (FILE * fp1){
+    // Read exchange file and print it on the standard IO
+	int ch;
+  	fp1 = fopen("exchange.txt", "r");
+	if (fp1 == NULL) {
+		printf("Sorry can't open exchange.txt\n");
+	}
+	else {
+		//Echoing the file read
+		while( ( ch = fgetc(fp1) ) != EOF )
+     		printf("%c",ch);
+	}
+	fclose(fp1); 
+}
+
+void sendCommand (int childpid) {
+	// Send signal to server for reading the command
+	kill(childpid, SIGUSR1);
+
+	// Receive signal back from server
+	while(myFlag == 0)
+		sigsuspend (&zeromask);
+	myFlag=0;
+}
+
+void respondCommand() {
+	//Unblock signals
+	sigprocmask (SIG_SETMASK, &oldAction.sa_mask, NULL);
+	
+	// Signal back to parent and Wait for signal again
+   	kill(getppid(), SIGUSR1);
+}
+-----------------------------------------------------
+
+4. Validation
+
+The program was tested using the MAC OSX 10.9.1. At this demonstration I ran the following steps:
+- listed the files, 
+- showed the contents of the fibonacci file (to compare with the READ command), 
+- compiled the source code, 
+- executed the program, 
+- typed an invalid command, 
+- typed a valid READ command, 
+- tried to use READ to a invalid file, 
+- typed a valid  DELETE command, 
+- typed the EXIT command.
+
+Then I listed the directory to show that the DELETE command was successful.
+
+-----------------------------------------------------
+macbook:p1 guilherme$ ls
+Makefile	README		fibonacci	simpleipc.c
+macbook:p1 guilherme$ cat fibonacci 
+0,1,1,2,3,5,8,13,21,34,55,89,144,233,377,610,987,1597,2584,4181
+macbook:p1 guilherme$ make
+cc simpleipc.c -o simpleipc
+macbook:p1 guilherme$ ./simpleipc
+% read
+Invalid command. Try READ, DELETE or EXIT.
+
+% READ fibonacci
+0,1,1,2,3,5,8,13,21,34,55,89,144,233,377,610,987,1597,2584,4181
+
+% READ test
+Problems reading 'test'
+
+% DELETE fibonacci
+File 'fibonacci' deleted
+
+% EXIT
+Server Terminated
+# macbook:p1 guilherme$ ls
+Makefile	README		simpleipc	simpleipc.c
+-----------------------------------------------------
+
+The validation of the EXIT command was used with the top command during and after the program execution:
+-----------------------------------------------------
+# macbook:p1 guilherme$ top
+Processes: 236 total, 2 running, 5 stuck, 229 sleeping, 1268 threads   21:20:26
+Load Avg: 1.48, 1.60, 1.64  CPU usage: 7.53% user, 7.31% sys, 85.14% idle
+SharedLibs: 12M resident, 10M data, 0B linkedit.
+MemRegions: 56227 total, 900M resident, 69M private, 407M shared.
+PhysMem: 2959M used (1100M wired), 4630M unused.
+VM: 525G vsize, 1065M framework vsize, 1659184(0) swapins, 1994044(0) swapouts.
+Networks: packets: 3515672/3055M in, 2471037/259M out.
+Disks: 761484/18G read, 558977/24G written.
+
+PID    COMMAND      %CPU TIME     #TH  #WQ  #PORT #MREGS MEM    RPRVT  PURG
+17035  mdworker     0.0  00:00.03 7    3    56    66     2496K  1388K+ 0B
+17034  top          11.2 00:03.88 1/1  0    23    38     2248K  2028K  0B
+17031  bash         0.0  00:00.00 1    0    19    30     612K   468K   0B
+17030  login        0.0  00:00.01 2    0    30    47     1084K  748K   0B
+17024  mdworker     0.0  00:00.08 4    0    54    70     3336K  2356K  0B
+17021  simpleipc    0.0  00:00.00 1    0    7     27     196K   108K   0B
+17020  simpleipc    0.0  00:00.00 1    0    15    26     296K   92K    0B
+16959  pacemaker    0.0  00:00.12 3    2    21    40     488K   316K   0B
+16953- Google Chrom 0.0  00:00.54 10   0    149   359    17M    13M    0B
+
+
+Processes: 234 total, 2 running, 6 stuck, 226 sleeping, 1270 threads   21:20:48
+Load Avg: 1.64, 1.63, 1.64  CPU usage: 3.12% user, 5.13% sys, 91.74% idle
+SharedLibs: 12M resident, 10M data, 0B linkedit.
+MemRegions: 56209 total, 977M resident, 69M private, 415M shared.
+PhysMem: 3038M used (1103M wired), 4541M unused.
+VM: 520G vsize, 1065M framework vsize, 1664726(0) swapins, 1994044(0) swapouts.
+Networks: packets: 3515876/3055M in, 2471244/259M out.
+Disks: 761926/18G read, 559054/24G written.
+
+PID    COMMAND      %CPU TIME     #TH  #WQ  #PORT #MREGS MEM    RPRVT  PURG
+17035  mdworker     0.0  00:00.03 4    0    51    60     2448K  1340K  0B
+17034  top          10.4 00:06.35 1/1  0    23    38     2252K  2032K  0B
+17031  bash         0.0  00:00.00 1    0    19    30     612K   468K   0B
+17030  login        0.0  00:00.01 2    0    30    47     1084K  748K   0B
+17024  mdworker     0.0  00:00.08 4    0    54    73     3364K  2384K  0B
+16959  pacemaker    0.0  00:00.12 3    2    21    40     488K   316K   0B
+16953- Google Chrom 0.0  00:00.54 10   0    149   359    17M    13M    0B
+16950- Google Chrom 0.0  00:03.08 10   0    149   394    29M    24M    84K
+16945  ocspd        0.0  00:00.02 2    0    21    37     1056K  748K   0B
+3. Source code
+
+
